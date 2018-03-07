@@ -1,0 +1,535 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r}
+library(quantmod)
+library(PerformanceAnalytics)
+library(xts)
+```
+## load data 
+```{r}
+data.AMD<-getSymbols("AMD", from ="2013-12-31",to="2017-10-31",auto.assign = FALSE)
+data.SOXL <-getSymbols("SOXL",from ="2013-12-31", to="2017-10-31",auto.assign = FALSE)
+data.FAF <-getSymbols("FAF", from ="2013-12-31", to="2017-10-31",auto.assign = FALSE)
+```
+
+
+##CPR
+```{r}
+#return.SOXL <- Return.calculate(data.SOXL$SOXL.Adjusted)
+#Return.cumulative(return.SOXL)
+return.AMD <- Return.calculate(data.AMD$AMD.Adjusted)
+return.SOXL <- Return.calculate(data.SOXL$SOXL.Adjusted)
+return.FAF <- Return.calculate(data.FAF$FAF.Adjusted)
+
+
+multi <-cbind(return.AMD, return.SOXL, return.FAF)
+multi <- multi[-1,]
+tail(multi)
+#Return.cumulative(Return.portfolio(multi, weights = c(1/3, 1/3,1/3), rebalance_on = "months"))
+
+Return.cumulative(return.AMD)
+Return.cumulative(return.SOXL)
+Return.cumulative(return.FAF)
+```
+##annualized standard deviation
+```{r}
+mat.return <- matrix(multi, nrow = nrow(multi))
+colnames(mat.return) <- c("AMD", "SOXL","FAF")
+weight <- c(1/3, 1/3,1/3)
+mat.wgt <- matrix(weight,1)
+tmat.wgt <- t(mat.wgt)
+
+VCOV <- cov(mat.return) * 252
+port.var <-mat.wgt %*% VCOV %*% tmat.wgt
+port.var
+port.sd <- sqrt(port.var)
+port.sd
+
+```
+#Risk
+##Parkinson Volatility
+```{r}
+parkinson <- data.SOXL[,c("SOXL.High","SOXL.Low")]
+parkinson$log.hi.low<-log(parkinson$SOXL.High/parkinson$SOXL.Low)
+parkinson$log.square<-(parkinson$log.hi.low)**2
+parkinson.sum<-sum(parkinson$log.square)
+parkinson.vol<-sqrt(1/(4*nrow(parkinson)*log(2))*parkinson.sum)
+annual.parkinson.vol<-parkinson.vol*sqrt(252)
+annual.parkinson.vol
+```
+##Garman-Klass
+```{r}
+garman.klass <- data.SOXL[,c("SOXL.Open","SOXL.High","SOXL.Low","SOXL.Close")]
+head(garman.klass)
+garman.klass.one<- (1/(2*nrow(garman.klass)))*sum((log(garman.klass$SOXL.High/garman.klass$SOXL.Low))**2)
+garman.klass.two <-((2*log(2)-1)/nrow(garman.klass)) *sum(log(garman.klass$SOXL.Close/garman.klass$SOXL.Open)**2)
+garman.klass.vol<-sqrt(garman.klass.one-garman.klass.two)
+annual.garman.klass.vol<-garman.klass.vol*sqrt(252)
+annual.garman.klass.vol
+```
+##Rogers, Satchell, and Yoon
+```{r}
+rsy.sat.yoon <- data.SOXL[,c("SOXL.Open","SOXL.High","SOXL.Low","SOXL.Close")]
+rsy.one<-log(rsy.sat.yoon$SOXL.High/rsy.sat.yoon$SOXL.Close)
+rsy.two<-log(rsy.sat.yoon$SOXL.High/rsy.sat.yoon$SOXL.Open)
+rsy.one.two<-rsy.one*rsy.two
+rsy.three<-log(rsy.sat.yoon$SOXL.Low/rsy.sat.yoon$SOXL.Close)
+rsy.four<-log(rsy.sat.yoon$SOXL.Low/rsy.sat.yoon$SOXL.Open)
+rsy.three.four<-rsy.three*rsy.four
+rsy.vol<-sqrt((1/nrow(rsy.sat.yoon))*sum((rsy.one.two+rsy.three.four)))
+annual.rsy.vol<-rsy.vol*sqrt(252)
+annual.rsy.vol
+```
+
+##Historical VaR 01
+```{r}
+returns <- cbind(return.AMD, return.SOXL, return.FAF)
+returns <- returns[-1,]
+names(returns) <- c("AMD.ret","SOXL.ret","FAF.ret")
+ret.cum.AMD <- Return.cumulative(returns$AMD.ret)
+ret.cum.SOXL <- Return.cumulative(returns$SOXL.ret)
+ret.cum.FAF <- Return.cumulative(returns$FAF.ret)
+AMD.val <- 1/3 * ( 1 + ret.cum.AMD)
+SOXL.val <- 1/3 * ( 1 + ret.cum.SOXL)
+FAF.val <- 1/3 * ( 1 + ret.cum.FAF)
+last.idx <- c(AMD.val,SOXL.val,FAF.val)
+sum(last.idx)
+sim.portPnL <- last.idx[1] * returns$AMD.ret+ last.idx[2] * returns$SOXL.ret+last.idx[3] * returns$FAF.ret 
+names(sim.portPnL) <- "Port.PnL"
+VaR01.Historical=quantile(-sim.portPnL$Port.PnL,0.99)
+VaR01.Historical
+VaR05.Historical=quantile(-sim.portPnL$Port.PnL,0.95)
+VaR05.Historical
+```
+
+##Historical Excess Shortfall
+```{r}
+ES.PnL <-sim.portPnL$Port.PnL
+ES.PnL$dummy01<-ifelse(ES.PnL$Port.PnL< (- VaR01.Historical) ,1,0)
+ES.PnL$dummy05<-ifelse(ES.PnL$Port.PnL< (-VaR05.Historical) ,1,0)
+shortfall01<-subset(ES.PnL,ES.PnL$dummy01==1)
+shortfall05<-subset(ES.PnL,ES.PnL$dummy05==1)
+ES01.Historical<- -mean(shortfall01$Port.PnL)
+ES01.Historical
+ES05.Historical<- -mean(shortfall05$Port.PnL)
+ES05.Historical
+```
+##CAPM
+```{R}
+
+data.AMD<- to.monthly(data.AMD)
+data.SOXL <- to.monthly(data.SOXL)
+data.FAF <- to.monthly(data.FAF)
+
+mkt.ret.AMD <- Return.calculate(data.AMD$data.AMD.Adjusted)
+mkt.ret.SOXL <- Return.calculate(data.SOXL$data.SOXL.Adjusted)
+mkt.ret.FAF <- Return.calculate(data.FAF$data.FAF.Adjusted)
+
+mkt.ret <- cbind(mkt.ret.AMD,mkt.ret.SOXL,mkt.ret.FAF)
+mkt.ret <- mkt.ret[-1,]
+port.ret<-Return.portfolio(mkt.ret,c(1/3,1/3,1/3),rebalance_on = 'month')
+
+setwd("~/Documents/termC/BUDT758I FIS")
+
+rf <- read.csv("DGS3MO.csv")
+rf$date<-as.Date(rf$DATE,"%Y-%m-%d")
+rf$DGS3MO<-as.numeric(as.character(rf$DGS3MO))
+
+data.GSPC <- getSymbols("^GSPC", from = "2013-12-31", to = "2017-10-31", auto.assign = FALSE)
+data.GSPC <- to.monthly(data.GSPC)
+mkt.ret.GSPC <- Return.calculate(data.GSPC$data.GSPC.Adjusted)
+mkt.ret.GSPC <- mkt.ret.GSPC[-1,]
+
+#Load	Risk Free	return
+rf$DATE <- NULL
+rf<-xts(rf$DGS3MO,order.by=rf$date)
+names(rf)<-paste("DGS3MO")
+rf.monthly<-to.monthly(rf)
+rf.monthly<-(1+rf.monthly[,1]/100)^(3/12)-1
+rf.sub<-subset(rf.monthly,index(rf.monthly) >= as.yearmon("Jan 2014") & 
+                 index(rf.monthly) <= as.yearmon("Oct 2017"))
+
+combo <- cbind(mkt.ret.GSPC$data.GSPC.Adjusted,rf.sub$rf.Open,  port.ret$portfolio.returns)
+names(combo)<-paste(c("mkt.ret.GSPC","rf","port.ret"))
+head(combo)
+#Calculate	excess	portfolio	and	market	return
+combo$exret<-combo$port.ret - combo$rf
+combo$exmkt<-combo$mkt.ret.GSPC - combo$rf
+
+#Run Regression	of	Excess	Firm	Return	on	Excess	Market	Return
+CAPM<-lm(exret~exmkt, data = combo)
+summary(CAPM)
+
+```
+#Market index prediction 
+```{r}
+set.seed(987654321)
+w1 <- rnorm(100000) # standard normal, mean=0, variance = 1
+head(w1,10)
+gbm.paths <- function(w1,S0,drift,sigma,dt){
+  ST <- S0*exp(drift*dt + sigma*w1*sqrt(dt))
+  ST
+}
+
+S0 = 2572.83
+riskfree=0.0115
+sigma = 0.1018 
+drift = (riskfree-0.5*sigma^2)
+T=0.25
+ST <- gbm.paths(w1[1:10000],S0,drift,sigma,T)
+stockindexreturnList<-(ST-S0)/S0
+stockindexreturn<-mean((ST-S0)/S0)
+stockindexrisk<-sd((ST-S0)/S0)
+stockindexreturn
+stockindexrisk
+```
+
+
+##MV optimization
+```{r}
+VCOV.MV <- cov(mat.return)
+mat.ret<-matrix(mkt.ret,nrow(mkt.ret))
+colnames(mat.ret)<-c("AMD.Ret","SOXL.Ret","FAF.Ret")
+
+avg.ret<-matrix(apply(mat.ret,2,mean))
+colnames(avg.ret)<-paste("Avg.Ret")
+rownames(avg.ret)<-paste(c("AMD", "SOXL","FAF"))
+
+min.ret<-min(avg.ret)
+max.ret<-max(avg.ret)
+
+increments=100
+tgt.ret<-seq(min.ret,max.ret,length=increments)
+head(tgt.ret)
+tgt.sd<-rep(0,length=increments)
+wgt<-matrix(0,nrow=increments,ncol=length(avg.ret))
+
+library(quadprog)
+for (i  in 1:100){
+  Dmat<-2*VCOV.MV
+  dvec<-c(rep(0,length(avg.ret)))
+  Amat<-cbind(rep(1,length(avg.ret)),avg.ret,diag(1,nrow=ncol(mkt.ret)))
+  bvec<-c(1,tgt.ret[i],rep(0,ncol(mkt.ret)))
+  soln<-solve.QP(Dmat,dvec,Amat,bvec=bvec,meq=2)
+  tgt.sd[i]<-sqrt(soln$value)
+  wgt[i,]<-soln$solution
+}
+
+colnames(wgt)<-paste(c("wgt.AMD", "wgt.SOXL", "wgt.FAF"))
+wgt[1,2]<-0
+wgt[nrow(wgt),1]<-0
+
+tgt.port<-data.frame(cbind(tgt.ret,tgt.sd,wgt))
+minvar.port<-subset(tgt.port,tgt.port$tgt.sd==min(tgt.port$tgt.sd))
+riskfree <- 0.0115
+tgt.port$Sharpe<-(tgt.port$tgt.ret-riskfree)/tgt.port$tgt.sd
+tangency.port<-subset(tgt.port,tgt.port$Sharpe==max(tgt.port$Sharpe))
+eff.frontier<-subset(tgt.port,tgt.port$tgt.ret>=minvar.port$tgt.ret)
+
+plot(x=tgt.sd, xlab="Portfolio Risk", y=tgt.ret, ylab="Portfolio Return", col="gray40",
+main="Mean-Variance Efficient Frontier")
+abline(h=0,lty=1)
+points(x=minvar.port$tgt.sd,y=minvar.port$tgt.ret,pch=17,cex=3)
+points(x=tangency.port$tgt.sd,y=tangency.port$tgt.ret,pch=19,cex=3)
+points(x=eff.frontier$tgt.sd,y=eff.frontier$tgt.ret, col ="pink" )
+
+```
+
+#Recalculate weight#############
+##CAPM
+```{r}
+colnames(mat.return) <- c("AMD", "SOXL","FAF")
+weight2 <- c(tangency.port$wgt.AMD,tangency.port$wgt.SOXL,tangency.port$wgt.FAF)
+mat.wgt2 <- matrix(weight2,1)
+tmat.wgt2 <- t(mat.wgt2)
+
+port.ret2<-Return.portfolio(mkt.ret,weight2,rebalance_on = 'month')
+
+combo2 <- cbind(mkt.ret.GSPC$data.GSPC.Adjusted,rf.sub$rf.Open,port.ret2$portfolio.returns)
+names(combo2)<-paste(c("mkt.ret.GSPC","rf","port.ret2"))
+head(combo2)
+
+#Calculate	excess	portfolio	and	market	return
+combo2$exret2<-combo$port.ret2 - combo$rf
+combo2$exmkt<-combo$mkt.ret.GSPC - combo$rf
+#Run Regression	of	Excess	Firm	Return	on	Excess	Market	Return
+CAPM2<-lm(exret2~exmkt, data = combo2)
+summary(CAPM2)
+```
+##annualized standard deviation
+```{r}
+mat.return <- matrix(multi, nrow = nrow(multi))
+colnames(mat.return) <- c("AMD", "SOXL","FAF")
+mat.wgt2 <- matrix(weight2,1)
+tmat.wgt2 <- t(mat.wgt2)
+
+VCOV <- cov(mat.return) * 252
+port.var <-mat.wgt %*% VCOV %*% tmat.wgt
+port.var
+port.sd <- sqrt(port.var)
+port.sd
+```
+#Risk
+##Parkinson Volatility
+```{r}
+data.SOXL <-getSymbols("SOXL",from ="2013-12-31", to="2017-10-31",auto.assign = FALSE)
+parkinson <- data.SOXL[,c("SOXL.High","SOXL.Low")]
+parkinson$log.hi.low<-log(parkinson$SOXL.High/parkinson$SOXL.Low)
+parkinson$log.square<-(parkinson$log.hi.low)**2
+parkinson.sum<-sum(parkinson$log.square)
+parkinson.vol<-sqrt(1/(4*nrow(parkinson)*log(2))*parkinson.sum)
+annual.parkinson.vol<-parkinson.vol*sqrt(252)
+annual.parkinson.vol
+```
+##Garman-Klass
+```{r}
+garman.klass <- data.SOXL[,c("SOXL.Open","SOXL.High","SOXL.Low","SOXL.Close")]
+head(garman.klass)
+garman.klass.one<- (1/(2*nrow(garman.klass)))*sum((log(garman.klass$SOXL.High/garman.klass$SOXL.Low))**2)
+garman.klass.two <-((2*log(2)-1)/nrow(garman.klass)) *sum(log(garman.klass$SOXL.Close/garman.klass$SOXL.Open)**2)
+garman.klass.vol<-sqrt(garman.klass.one-garman.klass.two)
+annual.garman.klass.vol<-garman.klass.vol*sqrt(252)
+annual.garman.klass.vol
+```
+##Rogers, Satchell, and Yoon
+```{r}
+rsy.sat.yoon <- data.SOXL[,c("SOXL.Open","SOXL.High","SOXL.Low","SOXL.Close")]
+rsy.one<-log(rsy.sat.yoon$SOXL.High/rsy.sat.yoon$SOXL.Close)
+rsy.two<-log(rsy.sat.yoon$SOXL.High/rsy.sat.yoon$SOXL.Open)
+rsy.one.two<-rsy.one*rsy.two
+rsy.three<-log(rsy.sat.yoon$SOXL.Low/rsy.sat.yoon$SOXL.Close)
+rsy.four<-log(rsy.sat.yoon$SOXL.Low/rsy.sat.yoon$SOXL.Open)
+rsy.three.four<-rsy.three*rsy.four
+rsy.vol<-sqrt((1/nrow(rsy.sat.yoon))*sum((rsy.one.two+rsy.three.four)))
+annual.rsy.vol<-rsy.vol*sqrt(252)
+annual.rsy.vol
+```
+
+##Historical VaR 01
+```{r}
+returns <- cbind(return.AMD, return.SOXL, return.FAF)
+returns <- returns[-1,]
+names(returns) <- c("AMD.ret","SOXL.ret","FAF.ret")
+ret.cum.AMD <- Return.cumulative(returns$AMD.ret)
+ret.cum.SOXL <- Return.cumulative(returns$SOXL.ret)
+ret.cum.FAF <- Return.cumulative(returns$FAF.ret)
+AMD.val <-tangency.port$wgt.AMD * ( 1 + ret.cum.AMD)
+SOXL.val <- tangency.port$wgt.SOXL * ( 1 + ret.cum.SOXL)
+FAF.val <- tangency.port$wgt.FAF* ( 1 + ret.cum.FAF)
+last.idx <- c(AMD.val,SOXL.val,FAF.val)
+sum(last.idx)
+sim.portPnL <- last.idx[1] * returns$AMD.ret+ last.idx[2] * returns$SOXL.ret+last.idx[3] * returns$FAF.ret 
+names(sim.portPnL) <- "Port.PnL"
+VaR01.Historical=quantile(-sim.portPnL$Port.PnL,0.99)
+VaR01.Historical
+VaR05.Historical=quantile(-sim.portPnL$Port.PnL,0.95)
+VaR05.Historical
+```
+
+##Historical Excess Shortfall
+```{r}
+ES.PnL <-sim.portPnL$Port.PnL
+ES.PnL$dummy01<-ifelse(ES.PnL$Port.PnL< (- VaR01.Historical) ,1,0)
+ES.PnL$dummy05<-ifelse(ES.PnL$Port.PnL< (-VaR05.Historical) ,1,0)
+shortfall01<-subset(ES.PnL,ES.PnL$dummy01==1)
+shortfall05<-subset(ES.PnL,ES.PnL$dummy05==1)
+ES01.Historical<- -mean(shortfall01$Port.PnL)
+ES01.Historical
+ES05.Historical<- -mean(shortfall05$Port.PnL)
+ES05.Historical
+```
+
+##Stock Return Prediction
+```{r}
+alpha=0.02978
+beta=4.32094
+riskfree=1.15
+riskfree.monthly<-(1+riskfree/100)^(3/12)-1
+stockindexreturn<-mean((ST-S0)/S0)
+marketReturn<-(ST-S0)/S0
+stockReturnList=beta*(marketReturn-riskfree.monthly)+alpha+riskfree.monthly
+stockReturn<-mean(stockReturnList)
+stockRisk<-sd(stockReturnList)
+stockReturn
+stockRisk
+```
+
+##bond
+```{r}
+t3mo <- getSymbols('DGS3MO',src='FRED', auto.assign = FALSE)
+t10yr <- getSymbols('DGS10',src='FRED', auto.assign = FALSE)
+
+treasury<-t3mo
+treasury<-merge(treasury,t10yr)
+extreme<-subset(treasury, index(treasury) >= "2013-12-31" & index(treasury) <= "2017-10-31")
+head(extreme)
+extreme<-extreme/100
+cor3mo10yr<-lm(formula=DGS10~DGS3MO,data=extreme)
+longtermreturn<-extreme[nrow(extreme),]
+sigma<-sd(extreme$DGS3MO,na.rm = TRUE)*sqrt(252)
+BONDS0 = 0.0115
+T = 0.25
+riskfree = 0.0115
+drift = (riskfree-0.5*sigma^2)
+BONDST <- gbm.paths(w1[1:10000],BONDS0,drift,sigma,T)
+head(BONDST)
+summary(cor3mo10yr)
+DGS103mo=-0.034484*BONDST+0.022151
+bondprc<-function(coupon,maturity,yield,par,coupon.freq){
+  periods=maturity*coupon.freq
+  coupon.period=coupon/coupon.freq
+  yield.period=yield/coupon.freq
+  bond.coupon<-rep(coupon.period,times=periods,length.out=NA,each=1)
+  bond.df<-as.data.frame(bond.coupon)
+  for (i in 1:periods) {
+    bond.df$cf[i]=par*coupon.period
+    bond.df$period[i]=i
+    bond.df$yield[i]=yield.period
+    }
+  bond.df$cf[periods]=bond.df$cf[periods]+par
+  bond.df$PV=bond.df$cf/((1+bond.df$yield)^bond.df$period)
+  value=sum(bond.df$PV)
+  value
+}
+DGS103mo=data.frame(DGS103mo)
+nrow(DGS103mo)
+
+coupon=0.0238
+maturity=10
+par=1000
+coupon.freq=2
+yield<-rep(0,nrow(DGS103mo))
+price<-rep(0,nrow(DGS103mo))
+for(i in 1:nrow(DGS103mo)){
+  yield[i]<-DGS103mo$DGS103mo[i]
+  price[i]<-bondprc(coupon,maturity,yield[i],par,coupon.freq)
+}
+bondReturnList<-(price-par)/par
+mean((price-par)/par)
+sd((price-par)/par)
+bondVaR01.Gaussian<- -(mean((price-par)/par)+sd((price-par)/par)*qnorm(0.01))*par
+bondVaR01.Gaussian
+bondVaR05.Gaussian<- -(mean((price-par)/par)+sd((price-par)/par)*qnorm(0.05))*par
+bondVaR05.Gaussian
+```
+##option
+```{r}
+## sd of historical data
+data.SOXL<-getSymbols("SOXL", from ="2013-12-31",to="2017-10-31",auto.assign = FALSE)
+return.SOXL <- Return.calculate(data.SOXL$SOXL.Adjusted)
+return.SOXL<-return.SOXL[-1,]
+sd(return.SOXL)
+##protective put
+bs.opm <- function(S,K,T,riskfree,sigma,type){
+  d1<-(log(S/K)+(riskfree+0.5*sigma^2)*T)/(sigma*sqrt(T))
+  d2<-d1-sigma*sqrt(T)
+  if(type=="Call"){
+    opt.val<-S*pnorm(d1)-K*exp(-riskfree*T)*pnorm(d2)
+  }
+  if(type=="Put"){
+    opt.val<-K*exp(-riskfree*T)*pnorm(-d2)-S*pnorm(-d1)
+  }
+  opt.val
+}
+
+
+S0 = 147.96	
+Kcall = 1.05*S0
+Kput = 0.95*S0
+T = 0.25
+riskfree = 0.0115  # 3-month US Treasury bill
+sigma = sd(return.SOXL)*sqrt(252)
+# Black-Scholes option pricing model for call and put
+C0 <- bs.opm(S0,Kcall,T,riskfree,sigma,"Call")
+P0 <- bs.opm(S0,Kput,T,riskfree,sigma,"Put")
+c(C0,P0)
+
+
+t = 0.25
+drift = (riskfree-0.5*sigma^2) # using expected drift
+St <- gbm.paths(w1[1:10000],S0,drift,sigma,t) # 10000 paths
+paths <- data.frame(St)  # put data into a data frame
+paths$call_moneyness <- ifelse(St-Kcall>0,St-Kcall,0)
+paths$put_moneyness <- ifelse(Kput-St>0,Kput-St,0)
+
+riskfree = 0.0115 # 3-month US Treasury bill, assumed to be unchanged from time 0
+Tmt = 0.25         # only three months left on 6-month option
+
+paths$Ct <- bs.opm(St,Kcall,Tmt,riskfree,sigma,"Call")
+paths$Pt <- bs.opm(St,Kput,Tmt,riskfree,sigma,"Put")
+
+paths$return_S <- 100*(paths$St-S0)/S0
+paths$return_C <- 100*(paths$Ct-C0)/C0
+paths$return_P <- 100*(paths$Pt-P0)/P0
+optionCallList<-(paths$Ct-C0)/C0
+mean((paths$Ct-C0)/C0)
+sd((paths$Ct-C0)/C0)
+optionPutList<-(paths$Pt-P0)/P0
+mean((paths$Pt-P0)/P0)
+sd((paths$Pt-P0)/P0)
+
+```
+
+##MV optimization for investment
+```{r}
+stockindexreturnList<-data.frame(stockindexreturnList)
+stockReturnList<-data.frame(stockReturnList)
+bondReturnList<-data.frame(bondReturnList)
+optionCallList<-data.frame(optionCallList)
+optionPutList<-data.frame(optionPutList)
+investment.return<-cbind(stockindexreturnList,stockReturnList,bondReturnList,optionCallList,optionPutList)
+nrow(optionCallList)
+VCOV.MV <- cov(investment.return)
+
+avg.ret<-rbind(0.003448167,0.03517252,0.01563858,0.5205084,0.5205084)
+min.ret<-0.003448167
+max.ret<-0.5205084
+
+increments=100
+tgt.ret<-seq(min.ret,max.ret,length=increments)
+head(tgt.ret)
+tgt.sd<-rep(0,length=increments)
+wgt<-matrix(0,nrow=increments,ncol=length(avg.ret))
+library(Matrix)
+Dmat<-2*VCOV.MV
+pd_D_mat <- nearPD(Dmat)
+library(quadprog)
+for (i  in 1:100){
+ 
+  Dmat = as.matrix(pd_D_mat$mat)
+  dvec<-c(rep(0,length(avg.ret)))
+  Amat<-cbind(rep(1,length(avg.ret)),avg.ret,diag(1,nrow=5))
+  bvec<-c(1,tgt.ret[i],rep(0,5))
+  soln<-solve.QP(Dmat,dvec,Amat,bvec=bvec,meq=0)
+  tgt.sd[i]<-sqrt(soln$value)
+  wgt[i,]<-soln$solution
+}
+
+colnames(wgt)<-paste(c("wgt.index", "wgt.stock", "wgt.bond", "wgt.call", "wgt.put"))
+wgt[1,2]<-0
+wgt[nrow(wgt),1]<-0
+
+tgt.port<-data.frame(cbind(tgt.ret,tgt.sd,wgt))
+minvar.port<-subset(tgt.port,tgt.port$tgt.sd==min(tgt.port$tgt.sd))
+riskfree <- 0.0115
+tgt.port$Sharpe<-(tgt.port$tgt.ret-riskfree)/tgt.port$tgt.sd
+tangency.port<-subset(tgt.port,tgt.port$Sharpe==max(tgt.port$Sharpe))
+eff.frontier<-subset(tgt.port,tgt.port$tgt.ret>=minvar.port$tgt.ret)
+
+plot(x=tgt.sd, xlab="Portfolio Risk", y=tgt.ret, ylab="Portfolio Return", col="gray40",
+main="Mean-Variance Efficient Frontier")
+abline(h=0,lty=1)
+points(x=minvar.port$tgt.sd,y=minvar.port$tgt.ret,pch=17,cex=3)
+points(x=tangency.port$tgt.sd,y=tangency.port$tgt.ret,pch=19,cex=3)
+points(x=eff.frontier$tgt.sd,y=eff.frontier$tgt.ret, col ="pink" )
+
+finalVaR05.Gaussian<- -(0.28+0.1*qnorm(0.01))*50000
+finalVaR05.Gaussian<- -(0.22+0.05*qnorm(0.01))*50000
+bondVaR01.Gaussian
+bondVaR05.Gaussian<- -(mean((price-par)/par)+sd((price-par)/par)*qnorm(0.05))*par
+bondVaR05.Gaussian
+
+```
